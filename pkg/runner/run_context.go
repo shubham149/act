@@ -90,7 +90,7 @@ func (rc *RunContext) jobContainerName() string {
 }
 
 // Returns the binds and mounts for the container, resolving paths as appopriate
-func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
+func (rc *RunContext) GetBindsAndMounts(ctx context.Context) ([]string, map[string]string) {
 	name := rc.jobContainerName()
 
 	if rc.Config.ContainerDaemonSocket == "" {
@@ -134,6 +134,17 @@ func (rc *RunContext) GetBindsAndMounts() ([]string, map[string]string) {
 		binds = append(binds, fmt.Sprintf("%s:%s%s", rc.Config.Workdir, ext.ToContainerPath(rc.Config.Workdir), bindModifiers))
 	} else {
 		mounts[name] = ext.ToContainerPath(rc.Config.Workdir)
+	}
+
+	if rc.IsHostEnv(ctx) {
+		bindModifiers := ""
+		if runtime.GOOS == "darwin" {
+			bindModifiers = ":delegated"
+		}
+		if selinux.GetEnabled() {
+			bindModifiers = ":z"
+		}
+		binds = append(binds, fmt.Sprintf("%s:%s%s", rc.JobContainer.GetActPath(), ext.ToContainerPath(rc.JobContainer.GetActPath()), bindModifiers))
 	}
 
 	return binds, mounts
@@ -239,7 +250,7 @@ func (rc *RunContext) startJobContainer() common.Executor {
 		envList = append(envList, fmt.Sprintf("%s=%s", "LANG", "C.UTF-8")) // Use same locale as GitHub Actions
 
 		ext := container.LinuxContainerEnvironmentExtensions{}
-		binds, mounts := rc.GetBindsAndMounts()
+		binds, mounts := rc.GetBindsAndMounts(ctx)
 
 		rc.cleanUpJobContainer = func(ctx context.Context) error {
 			if rc.JobContainer != nil && !rc.Config.ReuseContainers {
@@ -384,12 +395,16 @@ func (rc *RunContext) interpolateOutputs() common.Executor {
 
 func (rc *RunContext) startContainer() common.Executor {
 	return func(ctx context.Context) error {
-		image := rc.platformImage(ctx)
-		if strings.EqualFold(image, "-self-hosted") {
+		if rc.IsHostEnv(ctx) {
 			return rc.startHostEnvironment()(ctx)
 		}
 		return rc.startJobContainer()(ctx)
 	}
+}
+
+func (rc *RunContext) IsHostEnv(ctx context.Context) bool {
+	image := rc.platformImage(ctx)
+	return strings.EqualFold(image, "-self-hosted")
 }
 
 func (rc *RunContext) stopContainer() common.Executor {
